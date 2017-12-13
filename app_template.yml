@@ -1,0 +1,152 @@
+## this is the all-in-one, standalone Discourse Docker container template
+##
+## After making changes to this file, you MUST rebuild
+## /var/discourse/launcher rebuild app
+##
+## BE *VERY* CAREFUL WHEN EDITING!
+## YAML FILES ARE SUPER SUPER SENSITIVE TO MISTAKES IN WHITESPACE OR ALIGNMENT!
+## visit http://www.yamllint.com/ to validate this file as needed
+
+templates:
+#  - "templates/postgres.template.yml"
+  - "templates/redis.template.yml"
+  - "templates/web.template.yml"
+  - "templates/web.ratelimited.template.yml"
+## Uncomment these two lines if you wish to add Lets Encrypt (https)
+  #- "templates/web.ssl.template.yml"
+  #- "templates/web.letsencrypt.ssl.template.yml"
+
+## which TCP/IP ports should this container expose?
+## If you want Discourse to share a port with another webserver like Apache or nginx,
+## see https://meta.discourse.org/t/17247 for details
+expose:
+  - "80:80"   # http
+  - "443:443" # https
+
+params:
+  db_default_text_search_config: "pg_catalog.english"
+
+  ## Set db_shared_buffers to a max of 25% of the total memory.
+  ## will be set automatically by bootstrap based on detected RAM, or you can override
+  db_shared_buffers: "1024MB"
+
+  ## can improve sorting performance, but adds memory usage per-connection
+  #db_work_mem: "40MB"
+
+  ## Which Git revision should this container use? (default: tests-passed)
+  #version: v1.9.0.beta15
+  version: tests-passed
+
+env:
+  LANG: en_US.UTF-8
+  # DISCOURSE_DEFAULT_LOCALE: en
+
+  ## How many concurrent web requests are supported? Depends on memory and CPU cores.
+  ## will be set automatically by bootstrap based on detected CPUs, or you can override
+  UNICORN_WORKERS: 8
+
+  ## TODO: The domain name this Discourse instance will respond to
+  DISCOURSE_HOSTNAME: www.example.com
+
+  ## Uncomment if you want the container to be started with the same
+  ## hostname (-h option) as specified above (default "$hostname-$config")
+  #DOCKER_USE_HOSTNAME: true
+
+  ## TODO: List of comma delimited emails that will be made admin and developer
+  ## on initial signup example 'user1@example.com,user2@example.com'
+  DISCOURSE_DEVELOPER_EMAILS: 'discourse@example.com'
+
+  ## TODO: The SMTP mail server used to validate new accounts and send notifications
+  DISCOURSE_SMTP_ADDRESS: mail.example.com
+  DISCOURSE_SMTP_PORT: 25
+  DISCOURSE_SMTP_USER_NAME: ""
+  DISCOURSE_SMTP_PASSWORD: ""
+  #DISCOURSE_SMTP_ENABLE_START_TLS: true           # (optional, default true)
+
+  ## If you added the Lets Encrypt template, uncomment below to get a free SSL certificate
+  #LETSENCRYPT_ACCOUNT_EMAIL: me@example.com
+
+  ## The CDN address for this Discourse instance (configured to pull)
+  ## see https://meta.discourse.org/t/14857 for details
+  #DISCOURSE_CDN_URL: //discourse-cdn.example.com
+
+  DISCOURSE_DB_USERNAME: db_login
+  DISCOURSE_DB_PASSWORD: db_password
+  DISCOURSE_DB_HOST: 127.0.0.1
+  DISCOURSE_DB_NAME: discourse
+  #DISCOURSE_DB_PORT: 5432
+
+  DISCOURSE_RELATIVE_URL_ROOT: /discuss
+
+## The Docker container is stateless; all data is stored in /shared
+volumes:
+  - volume:
+      host: /var/discourse/shared/standalone
+      guest: /shared
+  - volume:
+      host: /var/discourse/shared/standalone/log/var-log
+      guest: /var/log
+
+## Plugins go here
+## see https://meta.discourse.org/t/19157 for details
+hooks:
+  after_code:
+    - exec:
+        cd: $home/plugins
+        cmd:
+          - git clone https://github.com/discourse/docker_manager.git
+          - git clone https://github.com/discourse/discourse-assign.git
+          - git clone https://github.com/discourse/discourse-solved.git
+          - git clone https://github.com/gdpelican/retort.git
+          - git clone https://github.com/discourse/discourse-staff-notes.git
+          - git clone https://github.com/discourse/discourse-tooltips.git
+          - git clone https://github.com/discourse/discourse-voting.git
+
+## Any custom commands to run after building
+run:
+    - exec:
+        cd: $home
+        cmd:
+          - mkdir -p public/discuss
+          - cd public/discuss && ln -s ../uploads && ln -s ../backups
+    - replace:
+       global: true
+       filename: /etc/nginx/conf.d/discourse.conf
+       from: proxy_pass http://discourse;
+       to: |
+          rewrite ^/(.*)$ /discuss/$1 break;
+          proxy_pass http://discourse;
+    - replace:
+       filename: /etc/nginx/conf.d/discourse.conf
+       from: etag off;
+       to: |
+          etag off;
+          location /discuss/ {
+             rewrite ^/discuss/?(.*)$ /$1;
+          }
+    - replace:
+       filename: /etc/nginx/conf.d/discourse.conf
+       from: etag off;
+       to: |
+          etag off;
+          location /discuss {
+             rewrite ^/discuss/?(.*)$ /$1;
+          }
+    - replace:
+         filename: /etc/nginx/conf.d/discourse.conf
+         from: $proxy_add_x_forwarded_for
+         to: $http_fastly_client_ip
+         global: true
+    - exec:
+         cmd:
+           - sed -i '/no-referrer-when-downgrade/a proxy_redirect https:\/\/www.example.com\/ https:\/\/www.example.com\/discuss\/;' /etc/nginx/conf.d/discourse.conf
+           - sed -i '/no-referrer-when-downgrade/a proxy_redirect https:\/\/www.example.com\/discuss\/ https:\/\/www.example.com\/discuss\/;' /etc/nginx/conf.d/discourse.conf
+           - sed -i '/no-referrer-when-downgrade/a proxy_redirect https:\/\/www.example.com\/discourse_sso https:\/\/www.example.com\/discourse_sso;' /etc/nginx/conf.d/discourse.conf
+           - sed -i 's/client_max_body_size 10m ;/client_max_body_size 100m ;/g' /etc/nginx/conf.d/discourse.conf
+           - sed -i '/proxy_set_header X-Real-IP $remote_addr;/d' /etc/nginx/conf.d/discourse.conf
+           - sed -i '/proxy_set_header X-Forwarded-For $http_fastly_client_ip;/d' /etc/nginx/conf.d/discourse.conf
+           - sed -i '/proxy_set_header X-Forwarded-Proto $thescheme;/d' /etc/nginx/conf.d/discourse.conf
+
+docker_args:
+  - "--add-host=www.example.com:127.0.0.1"
+  - "--add-host=example.com:127.0.0.1"
